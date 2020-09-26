@@ -1,0 +1,432 @@
+---
+title: "NYC Demographics part one: why is there a population decline in NYC?"
+author: ''
+date: '2020-02-11'
+output:
+    bookdown::html_document2:
+      number_sections: TRUE
+      fig_caption: TRUE
+slug: nyc-birth-and-death-rates-with-fred
+categories: []
+tags: []
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F, cache = T)
+```
+
+
+
+```{r}
+# read necessary libraries
+library(tidyverse)
+library(tsibble)
+library(ggplot2)
+library(ggrepel)
+library(tibble)
+library(lubridate)
+library(grid)
+library(scales)
+library(DT)
+library(fredr)
+
+fredr_set_key(Sys.getenv("FRED_KEY"))
+
+# series ids for fredr api
+pop_fred <- c("NYNEWY1POP",
+              "NYBRON5POP",
+              "NYKING7POP",
+              "NYQUEE1POP",
+              "BOSPOP",
+              "SFCPOP")
+
+# map series_id to city/borough name
+nyc_population <- 
+  map_dfr(pop_fred, fredr) %>% 
+  mutate(pretty_name = case_when(
+    series_id == "NYNEWY1POP" ~ "Manhattan",
+    series_id == "NYBRON5POP" ~ "Bronx",
+    series_id == "NYKING7POP" ~ "Brooklyn",
+    series_id == "NYQUEE1POP" ~ "Queens",
+    series_id == "BOSPOP" ~     "Boston",
+    series_id == "SFCPOP" ~ "San Francisco"
+    
+  ),
+  total_value = value*1000
+  )
+nyc_population <- 
+  nyc_population %>% 
+  mutate(nyc = series_id %in% c("NYNEWY1POP",
+              "NYBRON5POP",
+              "NYKING7POP",
+              "NYQUEE1POP"))
+
+# aggregate 4 boroughs for nyc measure
+agg <- 
+nyc_population %>% 
+  filter(nyc == T) %>% 
+  group_by(date) %>% 
+  summarise(total_value = sum(total_value),
+                          series_id = "NA",
+                          pretty_name = "NYC Big 4 Boroughs")
+
+nyc_population <-
+nyc_population %>% bind_rows(agg)
+
+nyc_population$date <- as.numeric(lubridate::year(nyc_population$date))
+
+# label first and last date of time-series
+nyc_labs <-
+nyc_population %>% 
+  group_by(pretty_name) %>% 
+  filter(date %in% range(date) | date == 2008)
+
+# label lowest population level
+nyc_labs_t <- nyc_population %>% 
+  group_by(pretty_name) %>% 
+  filter(total_value == min(total_value))
+
+nyc_labs <- nyc_labs %>% 
+  bind_rows(nyc_labs_t) %>% distinct()
+
+```
+
+## NYC sees a population decline while other, similar cities don't
+
+After seeing this data, I though for sure there would be a simple explanation for the recent negative growth of New York City. However, the more I pick apart the data, the more puzzling this trend becomes. A simple model for population growth takes into account births, deaths, as well as foreign and domestic migration. These processes are also full of complexities and require their own questions and answers. In my first post, I'll summarize this data and use it as a launching point for where to look next. 
+
+
+```{r,  fig.width = 5, fig.height=5, out.width= "50%",  out.extra='style="float:right; padding:10px"'}
+
+# yoy plot for nyc population
+agg10 <-
+agg %>% 
+  mutate(yoy = total_value - lag(total_value)) %>% 
+  filter(date > as.Date('2006-01-01')) 
+
+# choose dates to label
+agg_labs <- 
+agg10 %>% filter((yoy %in% range(yoy)) | date %in% range(date))
+
+# make a vector out of the years i want to label
+x_breaks <- map(c('2007-01-01','2010-01-01', '2014-01-01', '2018-01-01'), as_date) %>% reduce(c) 
+
+agg10 %>% 
+  ggplot(aes(x = date, y = yoy))+
+    geom_col(width = 200)+
+  scale_x_date(breaks = x_breaks, date_labels = '`%y')+
+  scale_y_continuous(labels = scales::unit_format(unit = 'k', scale = 1e-3, digits = 0),
+                     breaks = seq(-250000, 150000, 50000),
+                     limits = c(-200000, 130000)) +
+  labs(title = "Plot 1: Anuual Population Change",
+       subtitle = "Queens + Bronx + Brooklyn + Manhattan: 2007-2018",
+       y = "Difference in Population",
+       x = "Year",
+       caption ="U.S. Census via FRED")+
+  geom_text(data = agg_labs, 
+            # holy hell there has to be a better way to do this
+            aes(label = paste0(round(yoy/1000), 'k'), y = yoy+ (yoy>0)*13000 ), 
+            fontface = "bold",
+            vjust = 1.2,
+            size = 3.75)+
+    theme_minimal()
+```
+
+
+Plot 1 illustrates the path that  NYC population has taken. Prominently, there is a  large 'shock' in 2010,[^0] presumably from the financial crisis of 2008 and subsequent global recession. Following the shock there is strong recovery and then a pattern of slowing growth between 2012 and 2016, then negative growth in 2017 and 2018. I'll discuss why this pattern might be mysterious and use immigration, natality and fertility data to look for a proximate cause of this pattern.
+
+
+
+
+
+```{r  fig.width=3.7, fig.height=8, out.width= "50%", out.extra='style="float:left; padding:10px"'}
+
+# label geography at the right y-axis
+sec_labs <- nyc_population %>% 
+  group_by(pretty_name) %>%  
+  filter(date == max(date))
+
+nyc_population %>% 
+  ggplot(aes(x = date, y = total_value, group = pretty_name)) + 
+  geom_line()+
+  geom_point(data = nyc_labs, size = 1, color = "red")+
+  geom_text_repel(data = nyc_labs,
+                  aes(label = paste0(round(total_value*1e-6, digits = 2), 'm')),
+                  size = 2.5, fontface = "bold")+
+  scale_x_continuous(limits = c(1970, 2018), 
+                     breaks = c(1970, 1980,2000, 2008, 2018), 
+                     labels = c('`70', '`80', '`00', '`08','`18'),
+                     sec.axis = dup_axis())+
+  scale_y_log10(position = "right", 
+                breaks = sec_labs$total_value, 
+                labels = sec_labs$pretty_name)+
+  labs(title = "Plot 2: Borough-level Population",
+  subtitle = "1970 - 2018",
+       caption = "U.S. Census via FRED")+
+  ylab("Resident Population")+
+  theme_minimal()+
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank())
+```
+
+
+The 2008 Census reported that for the first time since the great recession, New York City saw a population decline. This apparently raised alarm bells among reporters and politicians alike. In an article calling the rate of population loss "alarming", [The New York Post](https://nypost.com/2019/12/30/new-york-is-losing-residents-at-an-alarming-rate-report/) cites the office of New York state Governer Cuomo as blaming Donald Trump's Immigration policies for the drop in population. Alternatively, NYC Mayor Bill deBlasio says that the reason his city is losing people is because of a change in the way the [the US Census counts immigration](https://www.nytimes.com/2019/04/18/nyregion/new-york-city-population.html).  
+
+<br/>
+
+#### my initial observations
+
+<br/>
+
+I expected to see some borough-level variation in NYC's population data but I was very surprised to see that, since 1970, all 4 boroughs have remarkably similar growth patterns. The data is also more cyclical than I would have expected: there also seem to be distinct inflection points where the city seems to switch between incresing/decreasing population. 
+
+<br/>
+
+
+#### does this mean anything?
+Looking at my (very tall) plot to the left, the recent decreases in population look underwhelming, especially compared to what happened in the `70s. However, given the cyclical nature of population-growth in NYC, this could be a sign of what's to come. Adding to the mystery, neither Bostor nor San Francisco have seen losses, suggesting that this is an [idiosyncratic](https://www.thesaurus.com/browse/idiosyncratic) shift: its not an urban phenomonon or an east-coast phenomenon, its a New York pheonomenon. What is going on here?
+
+
+<br/><br/>
+
+## migration
+
+
+```{r foreign}
+
+# Copy-paste data from https://www.baruch.cuny.edu/nycdata/population-geography/immigration.htm
+foreign_immigration <- 
+  tribble(~year, ~immigration, ~us_immigration, ~per_us, 
+        
+        '2017', '174421', '1127167', '15.5',
+        '2016', '195593', '1183505', '16.5',
+        '2015', '162168', '1051031', '15.4',
+        '2014', '174723', '1016518',  '17.2', 
+        '2013', '168734', '990553',   '17.0',
+        '2012', '180595', '1031631', '17.5',
+        '2011', '185276', '1062040', '17.4',
+        '2010', '187681', '1042625', '18.0',
+        '2009', '191536', '1130818', '16.9',
+        '2008', '181765',  '1107126', '16.4',
+        '2007',  '177468', '1052415', '16.9',
+        '2006', '226816', '1266129',  '17.9',
+        '2005', '174385', '1122257',  '15.5',
+        '2004', '138568',  '957883',  '14.5',
+        '2003', '117477',  '703542',  '16.7',
+        '2002', '154406',  '1059356', '14.6',
+        '2001', '157400', '1058902',  '14.9',
+        '2000', '132360',  '841002',  '15.7')
+foreign_immigration$immigration <- as.numeric(foreign_immigration$immigration)
+foreign_immigration$year <- as.Date(paste0(foreign_immigration$year, '-01-01'))
+
+```
+
+
+
+```{r migration, fig.width=4, fig.height=9, out.width= "45%", out.extra='style="float:left; padding:10px"'}
+# net migration ids from fredr
+migration_ls <- tribble(
+              ~Borough, ~series_id,  
+                'Manhattan' , "NETMIGNACS036061",
+                'Bronx' , "NETMIGNACS036005",
+                'Brooklyn', "NETMIGNACS036047",
+                 'Queens' ,  "NETMIGNACS036081")
+
+
+migration <- map_dfr(migration_ls$series_id, fredr) %>% 
+  inner_join(migration_ls, by = c("series_id" = "series_id"))
+
+# combuine estimates from 4 boroughs
+migration2 <- migration %>% 
+  group_by(date) %>% 
+  summarise(value = sum(value))
+
+migration3 <- foreign_immigration %>% 
+  select(year, immigration) %>% 
+  inner_join(migration2, by = c(year = "date"))
+
+
+# connected scatterplot
+migration3 %>% 
+  arrange(year) %>% 
+  ggplot(aes(x = immigration, y = value, label = as.character(lubridate::year(year)))) + 
+  geom_point(alpha = .8)+
+  geom_segment(color="grey0", 
+               aes(
+                 xend=c(tail(immigration, n=-1), NA), 
+                 yend=c(tail(value, n=-1), NA)
+               ),
+               arrow=arrow(length=unit(0.2,"cm"), type = "closed"),
+               lwd = .4,
+               alpha = .6
+  )+
+  scale_y_continuous(labels = scales::unit_format(unit = 'k', scale = 1e-3, digits = 0))+
+  scale_x_continuous(labels = scales::unit_format(unit = 'k', scale = 1e-3, digits = 0))+
+  labs(title= "Plot 3: Immigration & out-migration",
+      subtitle = "2009-2017",
+      x = "Immigration",
+       y = "Out-Migration", 
+       caption  = "Data: DHS and\n US Census via FRED")+
+  geom_text_repel( fontface = "bold")+
+  # coord_equal()+
+  theme_minimal()+
+  theme(axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank())
+
+
+
+
+
+```
+
+ 
+### foreign immigration and domestic losses
+
+Governor Cuomo's claim that the population losses were due to decreased foreign immigration remain untested here as I only use data until 2017, 1 year into the Trump presidency. However, the downward trend in NYC's population seemed to have started well before around 2011 or 2012 and, in that time period, foreign immigration doesn't seem to have changed very much. Plot 3 shows that domestic migration is likely to have more explanatory power. <br/>
+
+
+
+  This data mirrors the trend seen in the first plot, where, between 2011 and 2017 there is a strong downward trend in county-to-county migration as well as declining population-growth and eventually negative growth in 2017 and 2018. Net county-to-county migration is also an aggreation between  1. people moving to NYC and  2. poeple leaving NYC  this trend is likely a compination of the two, but I will need to use more granular data (probably IPUMS ACS data) to really figure out what is going on here. A naive interpretation of this plot would explain the negative county-to-county migration as a result of the rising cost of living in the city. However both San Francisco and Boston have seen similar increases in the cost-of-living but have not seen similar slowing and negative population growth. 
+  
+  
+ 
+
+```{r birth_death, echo = F}
+
+# i copy+pasted birth, death data
+df <-  read_csv("working.csv") %>% 
+  as_tsibble(index = year, key = variable)
+
+label_years <- c(2002, 2007, 2012, 2016)
+var_list <- c("birth_total", "death_total")
+df_label <- df %>% filter(year %in% label_years & variable %in% var_list)
+
+# the wide table made more sense for connected scatterplot
+bd_wide <- 
+df %>% 
+  filter(variable %in% var_list) %>% 
+  pivot_wider(names_from = variable)
+
+
+
+```
+
+<br/><br/>
+
+## Births, Deaths: 2000-2016
+
+
+
+```{r bd_plot, fig.width = 4, fig.height = 4, out.width= "50%", out.extra='style="float:right; padding:3px"'}
+y_scale <- c(120000,122000,124000,126000, 128000, 130000)
+
+bd_wide %>% 
+  arrange(year) %>% 
+  ggplot(aes(x = death_total, y = birth_total, label = year)) + 
+  geom_point(alpha = .6)+
+  geom_segment(color="grey0", 
+               aes(
+                 xend=c(tail(death_total, n=-1), NA), 
+                 yend=c(tail(birth_total, n=-1), NA)
+               ),
+               arrow=arrow(length=unit(0.2,"cm"), type = "closed"),
+               lwd = .4,
+               alpha = .6
+  ) + 
+  scale_y_continuous(labels = scales::unit_format(unit = 'k', scale = 1e-3, digits = 0))+
+  scale_x_continuous(labels = scales::unit_format(unit = 'k', scale = 1e-3, digits = 0))+
+  coord_equal()+
+  labs(title = "Plot 4: Total Births and Deaths",
+       subtitle =  "2000-2016",
+       x = "Deaths",
+       y = "Births",
+       caption = "Data: NYC DOH")+
+  
+  geom_text_repel(size = 3, fontface = "bold")+
+  theme_minimal() +
+  theme(plot.caption = element_text(size = 8))
+
+```
+
+
+Along with increases in out-migration, declining births are contributing to population-losses. Birth-rates are pretty important. All-else-equal, if a birth rate is above the replacement rate of 2.1[^1], the population will see exponential growth, conversely, exponential decay if the birth rate is below.[^2] Declining births rates are, in part, good news. The [summary of vital statistics report](https://www1.nyc.gov/assets/doh/downloads/pdf/vs/2017sum.pdf) shows that  teen births (15-19 years) is one of two groups that has seen significant declines since 1990. The other group is women between 20 and 29 years. I found [this podcast episode](https://www.stitcher.com/podcast/voxs-the-weeds/e/64195694) very helpful in thinking about declining birth rates in general.[^4] 
+
+
+Total deaths in NYC saw a sharp deacrease in between 2002 and 2006 and then remained relatively stable from 2007 to 2016. The sharp decrease is likely due to the end of the HIV epidemic.
+ Again, [summary of vital statistics report](https://www1.nyc.gov/assets/doh/downloads/pdf/vs/2017sum.pdf) comes in handy here and  shows that HIV-related conditions had the largest relative decreases in cause-of-death for NYC.[^3] There were also large decreases in homocide-related deaths in this period, however, it is not clear how much homocide contributes to the overall number of deaths. 
+
+
+
+<br/><br/>  
+
+# Summary
+
+For some perspective, this trend has only shown itself for a couple of years and could very well be due to random variation. My primary takeaway from this analysis is that there is a whole lot of complexity underlying demographic change with multiple interdependencies. Considering these complexities, causal inference needs to be approached with a lot of humility and I will leave the forecasts up to the experts. I look forward to continuing this analysis with better data and possibly some modelling. 
+
+***  
+[^0]: a measurement in 2010 represents a difference between July 1 2019 and July 1 2010
+[^1]: its not 2 because birth rate is births/woman and for some reason 1.05 buys are born for every girl
+[^2]: it never seems like exponential growth because the 'compounding frequency' is a generation
+[^3]: see table 9 for year 2000-2017 leading causes of death and table 10 for leading causes of premature death. Also, birth and death rates are probably more relevant here but I wanted to show magnitudes.
+[^4]: Population economist Lyman Stone says that women in their twenties and thirties want to have children but aren't
+
+
+# Data  
+
+#### Immigration Data  
+
+county-to-county [FRED](https://fred.stlouisfed.org/searchresults?st=county+to+county+migration)
+
+International immigration:  [here](https://www.baruch.cuny.edu/nycdata/population-geography/immigration.htm) 
+
+population: [again FRED](https://fred.stlouisfed.org/series/NYBRON5POP)
+
+
+
+
+```{r}
+DT::datatable(migration, extensions = c('Buttons', 'Scroller'),  options = list(
+    dom = 'Bfrtip',
+    scroller = T,
+    scrollY = 100,
+    searching = F,
+    buttons = c( 'csv')
+  ))
+
+DT::datatable(foreign_immigration, extensions = c('Buttons', 'Scroller'),  options = list(
+    dom = 'Bfrtip',
+    scroller = T,
+    scrollY = 100,
+    searching = F,
+    buttons = c( 'csv')
+  ))
+
+DT::datatable(nyc_population, extensions = c('Buttons', 'Scroller'),  options = list(
+    dom = 'Bfrtip',
+    scroller = T,
+    scrollY = 100,
+    searching = F,
+    buttons = c( 'csv')
+  ))
+```
+
+
+#### Births, Deaths Data  
+
+
+
+```{r}
+DT::datatable(bd_wide, extensions = c('Buttons', 'Scroller'),  options = list(
+    dom = 'Bfrtip',
+    scroller = T,
+    scrollY = 100,
+    searching = F,
+    buttons = c( 'csv')
+  ))
+```
+
+
+
+
+ 

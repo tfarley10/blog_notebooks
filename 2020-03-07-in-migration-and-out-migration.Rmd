@@ -1,0 +1,206 @@
+---
+title: "NYC Demographics part two: in-migration and out-migration"
+author: ''
+date: '2020-03-07'
+output:
+    bookdown::html_document2:
+      number_sections: TRUE
+      fig_caption: TRUE
+slug: in-migration-and-out-migration
+categories: []
+tags: []
+---
+```{r setup, echo=F}
+
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+
+
+```
+
+```{r}
+if(!require(pacman)) install.packages("pacman")
+pacman::p_load(
+                RPostgres,
+                DBI,
+                tidyverse,
+                here,
+                scales,
+                faRley,
+                ggrepel,
+                forcats,
+                RColorBrewer,
+                grattan,
+                egg)
+
+# already-processed ipums microdata
+load(file = here("mig_data.RData"))
+
+```
+### Brooklyn and Queens see distinct increase in out-migration, starting in 2010
+
+```{r fig.width=4, fig.align='center'}
+
+# aggregation of borough-level out-migration,
+out_boro <- 
+out_mig %>% 
+  group_by(year, borough) %>% 
+  summarise(count = sum(per_wt)) %>% 
+  mutate(label = 'Out-Migration')
+# in-migration
+in_boro <- 
+  in_mig %>% 
+  group_by(year, borough) %>% 
+  summarise(count = sum(per_wt)) %>% 
+  mutate(label = 'In-Migration')
+
+# combine the two
+boro_mig <- 
+  out_boro %>% 
+  bind_rows(in_boro)
+
+# specific points to hi-light
+points <- 
+  out_boro %>% 
+  filter(borough %in% c('Brooklyn', 'Queens') & year %in% c(2010, 2018)) %>% 
+  mutate(labels = 
+           paste0(
+             as.character(
+               round(count/1000, digits = 1)), 'k'))
+
+yr <- c(2006, 2010, 2014, 2018)
+yr2 <- str_sub(as.character(yr), 3, -1)
+yr3 <- paste0('`', yr2)
+  
+
+# plot migration, facet by borough
+boro_mig %>% 
+  ggplot(aes(x = year, y = count, color = label))+
+  geom_line(lwd = 1, alpha = .85)+
+  scale_y_continuous(label = unit_format(unit = "k", scale = 1e-3, sep = ""))+
+  geom_point(data = points, color = 'black', alpha = .8)+
+  scale_x_continuous(breaks = yr, labels = yr3)+
+  geom_text_repel(data = points, 
+                  color = 'black',
+                  fontface = 'bold',
+                  size = 3.5,
+                  aes(label = labels))+
+  scale_color_brewer(type = "qual", palette = 2)+
+  facet_wrap(~borough)+
+
+  labs(title = "Plot 1: Brooklyn and queens see \nincreases in out-migration from 2010-2018",
+       caption = "Data: IPUMS")+
+  theme_minimal()+
+  theme(panel.grid.minor = element_blank(),
+        legend.title = element_blank(),
+        axis.title = element_blank(),
+        legend.position = 'top')
+
+```
+
+Plot 1 shows that the de-populationg trends are largely affected by increases in out-migration, particularly in brooklyn and Queens. Its is interesting that Brooklyn and queens have such similar processes with both in-migration and out-migration compared to bronx and manhattan. <br/><br/>
+
+#### Younger and wealthier New-Yorkers are leaving
+
+- **young people:** the spread is greatest in the 30-39 age cohort. It seems likely that this comes from a lot of families moving to the suburbs. I'll have to look at where people are moving to in order to answer this question.
+
+- **rich people:** I thought people were getting priced out of new york but this data negates that intuition. I really don't understand whats going on here. Maybe the suburbs are becoming cooler and everyone wants to move there...
+
+
+```{r age_cohort, cache=T}
+# my local connection where i keep the ipums data
+con <- get_swamp(Sys.getenv('LOCAL_UNAME'), Sys.getenv('LOCAL_PW'))
+
+
+df <- 
+  con %>% 
+  tbl("nyc_migration") %>% 
+  collect() %>% 
+  mutate(age_bin1 = factor(age_bin1))
+
+# the two time periods im interested in
+df2 <-
+  df %>% mutate(window = case_when(
+    year %in% 2016:2018 ~ "2016-2018",
+    year %in% 2010:2012 ~ "2010-2012"
+  ))
+
+
+```
+
+```{r}
+# aggregate out-migration by 10-year age bins
+age_piv1 <- 
+df2 %>% 
+  filter(!is.na(window) & age>19) %>% 
+  group_by(window,  age_bin1, nyc_emigrate) %>% 
+  summarise(sum = sum(per_wt)) %>% 
+  mutate(prop = sum/sum(sum)) %>% 
+  filter(nyc_emigrate)
+
+# age plot
+age <- ggplot(age_piv1)+
+  geom_line(aes(x = age_bin1, 
+                y = prop*100, 
+                group = window, 
+                color = window), lwd = 1)+
+  scale_color_brewer(palette = "Paired")+
+  scale_y_continuous(breaks = seq(1,5.5,.5),
+                     labels = paste0(seq(1,5.5,.5), "%"))+
+  labs(title = "who leaves NYC?",
+       subtitle = "age cohort",
+       x = "age bin (20: 20-29 yo)",
+       y = "percent leaving in a given year")+
+  theme_minimal()+
+  theme(legend.position = "top",
+        legend.title = element_blank(),
+        panel.grid.minor = element_blank())
+
+# create weighted quintiles for income
+df3 <- 
+df2 %>% 
+  filter(age>25) %>% 
+  mutate(inc_percentile = weighted_ntile(income, per_wt, 10)*10)
+
+# aggregate by quintile
+income_piv <- 
+df3 %>% 
+  filter(!is.na(window)) %>% 
+  group_by(window, inc_percentile) %>% 
+  summarise(mean = weighted.mean(nyc_emigrate))
+
+  income <- ggplot(income_piv)+
+  geom_line(aes(x = inc_percentile, 
+                y = mean*100, 
+                group = window, 
+                color = window), lwd = 1)+
+    labs(title= "Emigration rate by Income Decile",
+         caption = "Data: IPUMS",
+         y = "percent leaving in a given year",
+         x = "income percentile")+
+  scale_color_brewer(palette = "Paired")+
+    
+    scale_y_continuous(breaks = seq(2.5,5.5, .5),
+                       labels = paste0(seq(2.5,5.5, .5), "%"))+
+    scale_x_continuous(breaks = seq(10,100,10),
+                       labels = paste0(seq(10,100,10), '%'))+
+    theme_minimal()+
+    theme(panel.grid.minor = element_blank(),
+          legend.position = "top",
+          legend.title = element_blank())
+  
+  ggarrange(age, income, nrow = 1)
+  
+  
+
+  
+```
+
+## a couple of puzzles
+
+This data produces more questions than answers. I'll have to go back to 'the drawing board' to think about what questions I should be asking next. I did learn a couple of things from this data:
+
+- Brooklyn and Queens are similar; Bronx and Manhattan are unique
+
+- People are leaving at higher rates. Particularly the 20-40 y/o cohort. The highest income decile had the greatest increase in leaving-rate.
+
+Next I will look at the housing market and try to understand the dynamics between cost-of-living and migration in NYC.

@@ -1,0 +1,191 @@
+---
+title: A History of Landmarking in New York City
+author: Ted Farley
+date: '2020-05-23'
+slug: landmarks
+categories: []
+tags: []
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F)
+```
+
+```{r, chache = T}
+pacman::p_load(ggridges,
+               tidyverse,
+               tidytext, gt,
+               ggridges)
+
+load(file = "dat.rdata")
+```
+
+```{r clean}
+dat <- 
+dat %>% 
+  mutate(historic = !is.na(hist_dist))
+  
+```
+
+
+### Intro
+
+In 1965, The Pennsylvania Railroad Company sold Penn Station along with its attached air-rights, citing the high maintenance costs of the iconic station. Penn station was replaced by the less sightly Madison Square Garden[^1]. For many New Yorkers, this was an unacceptable consequence of unfettered markets. This spurred Governor Robert F. Wagner to create the Landmarks Preservation Commission (LPC). The stated purposes of the LPC are to:
+
+- stabalize and maintain property values
+- foster civic pride
+- protect and enhance the city's tourist attractions
+- and, more generally, to promote the use of Landmarks.[^2]
+
+The LPC is not without it's critics, though. Unsurprisingly, real estate developers are often critical of the LPC: a landmarking explicitly constrain's the ability for a plot of land to be developed[^3] Furthermore, many economists[^4] point out that  landmarking is a part of a zoning code that  continues to become more opaque and restrictive. In this post, I'll use data from the the LPC and other administrative data from NYC to better  understand how landmarking has changed over time as well as how it  varies from borough-to-borough. 
+
+#### Data
+
+##### NYC Open Data Individual Landmarks dataset
+
+This dataset has three fields of interest to me: The date that a landmark was designated, the official name that LPC assigns a landmark as well as the Borough-Block-Lot ID  which I used to merge this data  with the PLUTO data. 
+
+##### PLUTO
+
+PLUTO  is an aggregation of administrative datasets from accross different city departments. From this dataset, I utilize fields for build-year of the structure, whether or not a structure is in an Historic District as well as the NYC Department of Finance estimated size (sq ft) of a given lot.  
+
+
+
+
+
+[^1]:https://en.wikipedia.org/wiki/Pennsylvania_Station_(New_York_City)#Current_structure_(1968%E2%80%93present)
+
+[^2]:LPC website: https://www1.nyc.gov/site/lpc/about/about-lpc.page
+
+[^3]:https://www.rebny.com/content/dam/rebny/Documents/PDF/News/Research/Policy%20Reports/REBNY_SAH_Paper.pdf
+
+[^4]: Preserving History or Hindering Growth? The Heterogeneous Effects of Historic Districts
+on Local Housing Markets in New York City
+Vicki Been, Ingrid Gould Ellen, Michael Gedal, Edward Glaeser, and Brian J. McCabe
+NBER Working Paper No. 20446
+
+
+### Where are there landmarks?
+
+The most strinking part of this data is how many more landmarked builings there are in Manhattan than the other boroughs. A randomly-chosen building in Manhattan is more than 20 times more likely to be landmarked than a building in the Bronx and 85 times more likely than a building in Queens. Manhattan was the first Borough to be inhabited in NYC so, naturally it will have more historical value than anywhere else, still, these number are surprising to me. A great challenge of historical preservation is that it is not feasible to measure the public value of a Historical artifact. Because of this, it is really hard to tell if such imballences arise from actual variation in Historical value or from an inefficient political process, its probably a little bit of both. 
+
+
+
+```{r where}
+# lollipop
+
+dat %>% 
+  group_by(borough) %>% 
+  summarise(prop = mean(landmark)) %>% 
+  mutate(Borough = fct_reorder(borough, prop)) %>% 
+ ggplot(aes(x=Borough, y=prop)) + 
+        geom_point(size=4, color="tomato3") + 
+        geom_segment(aes(x=Borough, 
+                   xend=Borough, 
+                   y=0, 
+                   yend=prop))+
+  scale_y_continuous(labels = scales::percent_format())+
+  labs(title = "Percent of Landmarked Buildings by Borough")+
+  theme_minimal()
+```
+
+#### Build Year
+
+Here we see the density of buildings by the year it was built. When thinking about histrical preservation, older is probably better. The early twentieth century was a very high-growth period for New York City and the United States as a whole. By 1920, New York City had over a quarter of the 300 largest corporations.[^5] Simply put, the early-twentieth century construction boom is NYC's largest stock of 'old-buildings.' It is worth noting that there are a-lot more buildings from the post-war boom of the '30s and '40s, but, I wonder if these buildings carry less development risk, less historical value, or both. 
+
+
+[^5]: David R. Goldfield and Blaine A. Brownell, Urban America: A History(2nd ed. 1990), p. 299
+
+
+
+```{r}
+dat %>% 
+  filter(year_built>0) %>% 
+  ggplot(aes(year_built,
+             color = landmark,
+             group = landmark ))+
+  geom_density(adjust = 2,
+               lwd = 1)+
+  scale_color_manual(labels = c("Non-Landmark", "Landmark"), 
+                     values = c("#a63603", "grey20"))+
+  theme_minimal()+
+  theme(legend.title = element_blank(),
+        legend.box = "")+
+  labs(x = "Year Built",
+       y = "Density",
+       title = "Density Landmarks vs. Non-Landmarks")
+
+```
+
+#### Density of Building Stock by Year
+
+Remember that the probability of a building on Manhattan classifying as a Landmark is orders of magnitude greater than on any other borough. Also, the distribution of build-year for landmarked builings has a center of mass in the early 20th century. The plot below shows us two things, Manhattan's distribution of build-year is shifted to the left and has a long left tail. More specifically, Manhattan is the only Borough with a notable amount of building older than 1900.
+
+
+```{r ridges}
+dat %>% 
+  filter(year_built !=0) %>% 
+  mutate(med_year = median(year_built),
+         Borough = fct_reorder(borough, med_year)) %>% 
+  filter(year_built>1800) %>% 
+  rename(`Build Year` = year_built) %>% 
+  ggplot( aes(x = `Build Year`, y = Borough, group = Borough)) +
+  geom_density_ridges(scale = 1, size = 0.25, rel_min_height = 0.03)+
+  theme_ridges() +
+  labs(title = "Density of Buildings by Build Year",
+       subtitle = "what percentage of buildings were built each year?")
+  
+```
+
+### Summary Table
+
+Historic Districts are a variety of landmarking, they are generally neighborhood's have development restrictions, but aren't as restrictive as In dividual Landmarks. Almost 15% of landmarks are in Historic Districts. The difference in Lot Area between Landmarks and non-Landmarks probably just highlights the fact that larger buildings (churches, theaters, libraries) tend to hold more cultural capital. 
+
+```{r}
+# summary data
+dat %>% 
+  filter(year_built>0) %>% 
+  group_by(landmark) %>% 
+  summarise(`Historic District` = mean(historic),
+            `Median Year Built` = median(year_built),
+            Area = median(lot_area)) %>%
+  mutate(landmark = fct_reorder(c("Not a Landmark", "Landmark"), Area, .desc = F)) %>% 
+  
+  gt(rowname_col = "landmark") %>% 
+  tab_header(title = "Landmarks vs. Non Landmarks") %>% 
+  fmt_percent(columns = c('Historic District')) %>% 
+  fmt_number(columns = c("Area"), decimals = 0) %>% 
+  cols_label(Area = "Median Lot Area (sq. ft)")
+```
+
+
+#### Landmark Taxonomy
+
+The LPC doesn't have a standard taxonomy  for their landmarks. Being unfamiliar with historical preservation, it was very helpful for me to attempt to create a taxonomy for myself.I did a simple word-frequency analysis on the official LPC name of a landmark. Houses are the most common type of Landmark followed by a mix of residential, public and private buildings such as hotels, schools and religious institutions. 
+
+```{r text, out.width=  2}
+
+blacklist <- c('and', 'of', 'new', 'york', 'public', 'the', 'east', 'west', '130th', 'no', 'state', 'street')
+
+
+dat %>% 
+  filter(landmark) %>% 
+  select(landmark_name) %>% 
+  unnest_tokens(word,landmark_name) %>% 
+  filter(!word %in% blacklist) %>% 
+  count(word, sort = T, name = "count") %>% 
+  mutate(prop = count/n()) %>% 
+   top_n(15) %>% 
+  gt(rowname_col = "word") %>% 
+  tab_header(title = "Percent of Landmarks containing each word") %>% 
+  fmt_percent(columns = c("prop"), decimals = 1) %>% 
+  cols_label(count = "# of instances", prop = "% of Records")
+  
+
+```
+
+
+### Summary
+
+Landmarking attempts to solve a public goods provision problem by explicitly restricting development of buildings deemed 'valuable.' The development of Penn Station was probably a market failure, the private benifits gained from the development of the station probably weren't as high as the public value lost in its destruction. Just asking, "what makes a good landmark?", highlights how blunt of an insturment can be. However it may be the best inturment there is. An important facet of landmarking and similar preservation insturments is that the benefits are visible and concentrated, whereas the costs are distributed and subtle but can have huge effects on society. I will explore this paradigm in future posts.  

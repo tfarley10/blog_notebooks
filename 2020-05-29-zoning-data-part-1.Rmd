@@ -1,0 +1,166 @@
+---
+title: 'Land Use in NYC 2002-2019'
+author: Ted Farley
+date: '2020-05-29'
+slug: zoning-data-part-1
+categories: []
+tags: []
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+
+```{r}
+pacman::p_load(tidyverse, gt, sf, ggthemes)
+```
+
+
+```{r read, cache=T}
+load(file = "pluto.rdata")
+```
+
+```{r piv1, cache = T}
+district <- 
+dat2 %>% 
+  filter(District != "No Zoning") %>% 
+  group_by(year, Borough, District) %>% 
+  summarise(area = sum(lot_area)) %>% 
+  mutate(mil_area = area/1e6)
+
+```
+
+
+## Intro
+
+Economic inequality has risen dramatically in the United States and much of the western world since the 1970's. For Social Scientists, Politicians and pundits, answers have not been easy to come by. Explanations range from increases in foreign immigration, and higher demand for high-skilled labor to under-regulated financial markets and bloated CEO incomes. Some researchers have asserted that there has been a decline in labor mobility over this time period as well. A lack of housing supply (and high rent) are often cited causes of the lower georgraphic mobility for American workers. Lower geographic mobility has serious consequences for income mobility and general market efficiency. Recently, researchers Chang-Tai Hseih and Erico Moretti estimate the costs that high housing prices, especially in Metripolitan areas with high worker productivity, imposed on the US economy between 1964 and 2009[^1]. Importantly, they *show* that New York City and San Francisco are largely responible for the misallocation effects that Housing supply constraints have on the American worker.
+
+
+
+
+```{r, fig.width=7, fig.height=8}
+
+district %>%
+  ungroup %>% 
+  filter(District != "No-Zoning") %>%
+  mutate(Borough = factor(Borough, 
+                          levels = c("Queens", 
+                                     "Brooklyn", 
+                                     "Staten Island", 
+                                     "Bronx", 
+                                     "Manhattan"))) %>% 
+  ggplot(aes(x = factor(year), y = mil_area, group = District))+
+  geom_line(aes(color = District), lwd = .8)+
+  geom_point(aes(color = District))+
+  facet_grid(~Borough, scales = "free", space = "free")+
+  labs(title = "Total lot area by zoning district",
+      subtitle = "NYC 2002-2019",
+      y = "Total lot area (millions of sq ft.)",
+       x = "")+
+  # scale_x_discrete(expand = c(0.05,0.05))+
+  scale_color_brewer(type = "qual", palette = "Dark2")+
+  theme_minimal()+
+  theme(legend.position = "top",
+        legend.title = element_blank())
+
+```
+
+
+#### Some solutions
+
+One thing that really interests me in the research on zoning is that for the profound effects that zoning is having on American workers and *the economy* at large, there aren't yet great ways of measuring changes in zoning regulations. This is not a fluke, zoning law is not standard across space or time, its hard to understand and famously boring! For example, one way to amend zoning law is for local planning commissions to just create a new zoning district: in 2002 New York city had 138 distinct zoning district and 162 in 2019. It seems like the standard way to quantify land use regulations in economics is to use survey's: ask local policy-makers what their regulations are like and put that into an index[^2]. Alternatively, researchers at the Urban Institute suggest that a machine-learning approach can be helpful. They show that can use property records data to model and predict zoned density[^3].
+
+#### Data
+
+The data come from [PLUTO](https://www1.nyc.gov/site/planning/data-maps/open-data/dwn-pluto-mappluto.page) which are aggregations of data from several NYC agencies that is combined and managed by the NYC Department of City Planning. The data is on the level of a tax-lot and, depending on the year has around 70 fields as well as GIS polygon's for each record. I combined 2002 data (the earliest year with good documentation) with data from 2019. There was some minor mapping between field definitions but I was pleasantly surprised with how consisten the fields were. 
+
+
+##### Districts
+
+I compare the zoned area by district and borough as well as any changes between 2002 and 2019 in the plot below. In this data, its obvious that there are very large differences in the distribution of between boroughs while there only seems to be subtle changes in a given borough over time. I'm not surprised by this as I am under the impression that most of the changes in the zoning code don't come from land use changes (moving from residential to commercial, etc.) but in changing the specifications of of particular district. 
+
+<br><br><br>
+
+### Land-Use
+
+In NYC as a whole, we see the distribution of land use stay relatively stable in this time period. It looks like Queens and Brooklyn "traded" some park space for commercial and manufacutring space. 
+```{r}
+dat2 %>% 
+  filter(District != "No-Zoning") %>% 
+  group_by(year, District) %>% 
+  summarise(area = sum(lot_area)) %>% 
+  
+  mutate(diff = area-lag(area)) %>% 
+  mutate(Percent = area/sum(area)) %>% 
+  select(-area, -diff) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = year, values_from = Percent) %>% 
+  mutate(`Percent Change` = `2019`-`2002`) %>% 
+  arrange(desc(`2002`)) %>% 
+  gt(rowname_col = "District") %>% 
+  fmt_percent(columns = c('2002', '2019', 'Percent Change'), decimals = 1) %>% 
+  tab_header(title = "Changes in Land Use",
+             subtitle = "as % of land area")
+
+
+```
+
+
+#### Historic districts
+
+My most recent [post](https://tfarley10.github.io/2020/05/23/landmarks/) talks about the Landmarks Preservation Committee and "Landmarking" across NYC; a relative of Landmarks are Historic Districts. Historic Districts are Neighborhoods that have stricter zoning codes for the purpose of preserving a Neighborhood's historical value. Manhattan has by far the highest density of Historic Districts. This is at least in part because Manhattan has the greatest number of structures built in the 19th and early twentieth centuries. 
+
+```{r}
+
+hist_pivot <- 
+dat2 %>% 
+  filter(!str_detect(zone_dist, "PARK")) %>% 
+  mutate(historic = !(hist_dist == 0 | is.na(hist_dist))) %>%
+  
+  group_by(year, Borough, historic) %>%
+  summarise(hist_sum = sum(lot_area)) %>% 
+  mutate(prop = hist_sum/sum(hist_sum)) %>% 
+  filter(historic) %>% 
+  ungroup() %>% 
+  mutate(Borough = fct_reorder(Borough, prop, .desc = T))
+
+
+
+hist_pivot %>% 
+  ggplot(aes(x = Borough, y = prop, group = year, fill = factor(year)))+
+  geom_col(position = "dodge", width = .7)+
+  scale_y_continuous(labels = scales::percent_format())+
+  scale_fill_economist()+
+  labs(title = "Percent of land in historic district",
+    x = "",
+       y = "")+
+  theme_minimal()+
+  theme(legend.title = element_blank(),
+        legend.position = c(.8, .8))
+  
+  
+  
+```
+
+
+##### Next Steps
+
+In New York city there is pretty good data on land use regulations via the city's aggregated PLUTO and MapPluto datasets. I summarize some of that data here and highlight some subtle changes in land-use from 2002 to 2019. My next task is to create a tax-lot level longitudinal dataset with this data. This dataset will allow me to tract changes for individual plots of land rather than just aggregate changes for a Borough, Census tract or Neighborhood. My next post will be introducing and summarizing the longitudinal dataset.
+
+
+### The Information Problem and Summary
+
+The purpose of this post is largely to introduce the problems that urban land-use regulations solve for but also create. Land-use and zoning regulation's present an epistemic problem. The regulations are coded on a neighborhood-level making them irregular and accross localities and cities. These irregularities make researching the phenomenon very difficult. I believe Data Science, and maybe more so Data Engineering, can contribute a lot to the information problem here. And by contributing to the solution I mean creating some sort of a centralized geographic database that contains generalizable zoning characteristics across time. 
+
+
+[^1]: Hsieh, Chang-Tai, and Enrico Moretti. 2019. "Housing Constraints and Spatial Misallocation." American Economic Journal: Macroeconomics, 11 (2): 1-39.
+[^2]:   Gyourko, J., Saiz, A., & Summers, A. (2008). A New Measure of the Local Regulatory Environment for Housing Markets: The Wharton Residential Land Use Regulatory Index. Urban Studies, 45(3), 693–729. https://doi.org/10.1177/0042098007087341
+[^3]: Nechamkin and MacDonald. "Predicting Zoned Density Using Property Records". Urban Institute. 2019.
+
+
+
+
+
+
+

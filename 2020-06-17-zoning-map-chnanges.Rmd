@@ -1,0 +1,290 @@
+---
+title: 'Did Bloomberg mostly Upzone or Downzone NYC?'
+author: ''
+date: '2020-06-17'
+slug: zoning-map-chnanges
+categories: []
+tags: []
+---
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F)
+```
+
+```{r libs}
+pacman::p_load(
+  tidyverse,
+  here,
+  patchwork,
+  ggthemes,
+  ggrepel
+)
+```
+
+
+```{r read, cache=TRUE}
+con <- 
+  DBI::dbConnect(RPostgreSQL::PostgreSQL(),
+                 host = "localhost",
+                 dbname = "swamp",
+                 user = "tfarley",
+                 port = 5432)
+
+d <-
+con %>% 
+  tbl("pluto_agg") %>% 
+  select(bbl_code, year, borough, zone_dist, unitsres, ownertype, bldgarea, community_district) %>%
+  collect()
+
+d2 <- d %>% 
+  arrange(year) %>% 
+  mutate(land_use  = str_sub(zone_dist, 1, 1),
+         sub_zone  = as.integer(str_sub(zone_dist, 2, 2)),
+         area_unit = bldgarea/unitsres)
+
+d3 <- d2 %>% 
+  group_by(bbl_code) %>% 
+  mutate(diff     = sub_zone  -  lead(sub_zone),
+         same_use = land_use == lead(land_use))
+
+
+```
+
+### Intro
+
+Throughout the past several decades, it has become less and less affordable to live in cities. As well-paying manufacturing and farming jobs are increasingly automated, workers flock to metroplitan areas for access to the knowledge economy. While cities in the sunbelt and Midwest have been able to provide adequate housing supply, coastal cities like New York and the Bay Area have seen large price increases. While coastal cities often have more geographical constraints (they're surrounded by water) many point to restrictive zoning codes to explain their rise in prices. Compared to the Bay Area, the City of New York has a lot of responsibility for it's Zoning code. This is in contrast to the Bay Area which is spread out over several autonomous cities. For example, the City of New York can have a large influence on the zoning code in Queens whereas, the City of San Francisco has no authority over Oakland's regulations. 
+
+
+
+```{r fig.width = 6, fig.height=4}
+hpi <- read_csv(here("content", "post", "freddie_mac.csv"))
+theme_set(theme_minimal()+
+            theme(panel.grid.minor = element_blank(),
+                  legend.position = "bottom"))
+
+ggplot(hpi)+
+  geom_line(aes(date, value, color = msa), lwd = 1)+
+  scale_color_brewer(type = "qual", labels = c("Atlanta", "Chicago", "NYC"))+
+  labs(title = "House prices double in NYC Region", 
+       x = "",
+       y = "Price Index, Year 2000 = 100",
+       caption = "Freddie Mac HPI",
+       color = "US Census MSA")
+
+
+```
+
+
+
+```{r yoy_table, cache = T}
+yoy_table <- d3 %>% 
+  filter(same_use) %>% 
+  group_by(year, borough) %>% 
+  summarise('Percent Upzoned'   = mean(diff<0, na.rm = T),
+            'Percent Downzoned' = mean(diff>0, na.rm = T))
+```
+
+
+  A common urban planning mantra is that "we need to increase affordable housing capacity while maintaining neighborhood character." Both of these things sound really great, but there is an inherent tradeoff between the two: increasing the housing supply often means compromising the profile of the neighborhood. Unfortunately, because zoning and land-use law is so opaque and hard to understand, its really hard to tell what is happening with our zoning code. Also when a neighborhood is re-zoned that usually means that some lots are up-zoned, while others are downzoned. In this post I'll use some data from NYC Deaprtment of City Planning's PLUTO^[https://www1.nyc.gov/site/planning/data-maps/open-data.page] database to answer whether or not NYC land has been net downzoned since 1992, which zoning districts are most likely to be downzoned, as well as speculate as to how these trends might affect the housing supply in NYC. 
+
+
+#### Bloomberg's map amendment approach
+
+The plot above shows, the percentage of tax-lots that get down-zoned from one year to the next--for example an R6 in 2012 lot changes to an R5 lot in 2013.^[I only consider residential changes and I also don't consider contextual changes rezoning (basically a downzone) which will underestimate downzoning] This is what is referred to as a **zoning map amendment**. Map amandments contrast **zoning text amendments** which change the restrictions for a given zoning district. Two things are very noticable about the bevahior and trend of map amendments in NYC. Mayor Bloomberg's administration was quite active in zoning policy during his tenure (2002-2013). Also, as the Furman institute notes, his administration and the Department of City Planning "eschewed a comprehensive rewrite of the Resolution and focused instead on using its existing powers to initiate neighborhood rezonings."^[https://furmancenter.org/files/publications/Rezonings_Furman_Center_Policy_Brief_March_2010.pdf] Land-use under Bloomberg is known for three ambitious upzonign's: the Long Island City in 2001, Downtown Brooklyn 2004 and, as part of a bid for the 2012 Summer Olympics, Hudson Yards on the West Side of Manhattan in 2007. It's above my pay-grade to say with certainty whether these projects "created" more housing but there are certainly new, tall buildings in all of these places. It's not surprising that Bloomberg's administration is known for its eager upzoning, when an area gets upzoned there are big buildings going up and cranes everywhere  and it feels like we've created something. In contrast, a downzone is a non-event, its probably an effective way to appease landowners but you wont make the news.
+
+
+
+
+```{r, fig.height=6, fig.width=7, fig.align="left"}
+yoy_table <- 
+yoy_table %>% 
+  mutate(yr = paste0('`', str_sub(as.character(year), 3, 4))) %>% 
+  ungroup
+
+yoy_zone <- 
+yoy_table %>% 
+  select(-year) %>% 
+  pivot_longer(cols = c(-yr, -borough))
+
+dt <- tibble(borough = "BX", yr =12, value = .025, label = "hello")
+
+yoy_zone %>% 
+  # filter(borough != "SI") %>% 
+  ggplot()+
+  geom_col(aes(yr, value, color = name, fill = after_scale(alpha(color, .6))), 
+           position = position_dodge(), width = .7)+
+  geom_vline(aes(xintercept = '`13'), color = "grey50", linetype = "dotdash")+
+  scale_y_continuous(labels = scales::label_percent(), limits=c(0,.04), breaks = c(0,.015, .03))+
+  scale_color_brewer(type = "qual", palette = "Dark2")+
+  facet_grid(borough~.)+
+  geom_text_repel(data = dt, aes(x = yr, y = value, label = str_wrap("End of Bloomberg Administration", 15)), 
+                  direction = "x",
+                  point.padding = .5,
+                  size = 2.5,
+                  box.padding = 1.5,
+                  nudge_x = .5,
+                  arrow = arrow(length = unit(0.05, "npc"), type = "closed", ends = "last")
+                  )+
+  theme_minimal()+
+  labs(title    = "Zoning map changes slowed down since 2013",
+       subtitle = "Percent of residential lots with map change",
+       caption = "*values are the year before the change is reflected in the data",
+       x = "",
+       y = "")+
+  theme(legend.position  = "right",
+        legend.title     = element_blank(),
+        panel.grid.minor = element_blank())
+
+
+```
+
+
+
+
+
+
+
+
+#### Compartmentalization and land use
+
+At some level the objective of city-planning is to decide what can go where. For instance, we shouldn't dump our industial waste near elementary schools and we should have public transit near houses, etc. For better or for worse, where we should have high-density, medium-density and low density housing is also the decision of the planner. While these decisions are often necessary, in a changing city it is often an insurmountable task to optimize land use regulations to optimize intended outcomes. Often, its is just decided that a neighborhood/community/borough is high density or low density. In the Bloomberg administration a lot in Queens was twice as likely to be downzoned than upzoned, in Manhattan a lot was twice as likely to be up-zoned than down-zoned. Naturally, the dense get denser and vice versa. <br>
+
+I think the tendency to compartmentalize land-uses makes a lot of sense. As I show in the plot below, very few residential lots are high, density, however most residential units are on high density lots. Especially condsidering that people who live in low-density neighborhoods often like to keep their neighborhoods low density, its a tempting startegy to set a side a small fraction of land to build really tall buildings and have the rest as low density. Unfrotunately, tall buildings are expensive to build because they require a lot of steel and elevators^[https://podcasts.apple.com/us/podcast/the-weeds/id1042433083] and low density houses just don't house that many people. Medium density housing tends to cheaper to build per dwelling unit but, and it does appear to be underrepresented in the NYC housing stock. Some people call this the **missing middle** problem. Because of regulatory constraints and supply-side incentives, the cheapest housing to get built is built the least. 
+
+
+
+
+
+
+```{r  density_plot, fig.height=3, cache = T}
+
+con <- 
+  DBI::dbConnect(RPostgreSQL::PostgreSQL(),
+                 host = "localhost",
+                 dbname = "swamp",
+                 user = "tfarley",
+                 port = 5432)
+foo <- con %>% 
+  tbl("pluto_agg") %>% 
+  filter(year == 2020, unitsres>0) %>% 
+  select(unitsres, lotarea)
+foo <- collect(foo)
+
+theme_set(theme_minimal()+
+            theme(axis.text.y = element_blank(),
+                  plot.title   = element_text(size = 10),
+                  plot.subtitle = element_text(size = 8),
+                  panel.grid.minor = element_blank()))
+
+
+p1 <-
+foo %>% 
+  ggplot()+
+  geom_density(aes(unitsres, weight = unitsres), adjust = 15)+
+  labs(title  = "Density of Residential units by units per lot",
+       x      = "residential units/lot",
+       y      = "density of total residential units",
+       caption = "PLUTO")+
+  annotate(geom = "curve", x = 10, y =.18, xend = 50, yend = .1, curvature = .3, 
+           arrow = arrow(length = unit(2, "mm"), ends = "first"))+
+  annotate(geom = "text", x = 55, y = .08, label = "Missing\nmiddle", hjust = "left")+
+  scale_x_log10()
+
+
+p2 <-
+foo %>% 
+  ggplot()+
+  geom_density(aes(unitsres), adjust = 15)+
+  labs(title   = "Density of total lots by residential units per lot",
+       x       = "residential units/lot",
+       y       = "density of total lots")+
+  scale_x_log10()
+
+p2|p1
+
+```
+
+#### We probably just don't understand land-use policy that well
+
+Acheviving "optimal zoning policy" is a daunitng task. There are some easy decisions like not dumping environmental waste in dense residential areas and helping to increase affordable housing by allowing for development near transit. Pro-development advocates correctly point out that it is too easy to underestimate the needs of people who don't yet live her (immigrants) and people who haven't been born yet. In most market conditions artificial supply constraints (zoning regulations) lead to high prices and shortages. This is why its expected that homeowners will generally advocate for restrictive zoning, it will increase the price of their land. There is also good evidence that local increases in housing supply can increase rent. ^[https://economics.mit.edu/files/9760] This explains the current housing politics in which leaders from wealthy neighborhoods *and* underserved neighborhoods often oppose development. In contrast to the planners platitude, the YIMBY platitude might be "we need to build more" is obviously true, but maybe not that helpful.
+  
+  Mayor Bloomberg hired one of his friends, Amanda Burden as the Director of the Department of City Planning. As a planner, she was a real go-getter^[https://www.nytimes.com/2012/05/20/nyregion/amanda-burden-planning-commissioner-is-remaking-new-york-city.html] who claimed to have the ambition of Robert Moses with the ethical resolve of Jane Jacobs. Initially the pervasive downzoning that happened during the Bloomberg's three terms was a puzzle, Manhattan's skyline did get substantially taller during his administration. It became clear that these changes came largely from Burden. Later in her tenure as Director of DCP she was open about the fact that the mayor was much more pro-develepment than she was. So it did seem like the administration was pro-growth as there was a lot of development in Long Island City, Downtown Brooklyn and Hudson Yards but it easy to miss what was happening in New York's less dense neighborhoods. I think Burden had good intentions and did in fact accomplish a lot of what she set out to do. However, I don't think that anyone really understood the effects of her initiatives. 
+  
+  Zoning proposals are very hard to summarize, within a given rezoning project almost always there are some lots that are upzoned, some and some that are downzoned. Furthermore, each proposal should come with estimates of housing created compared to no action and/or the next best plan. The costs of downzoning are hidden and realized in the future and zoning proposals need to make that explicit and summarizable. 
+
+
+
+
+
+```{r mosaic_table, cache=T}
+d3 <- d3 %>% 
+  mutate(zone = str_sub(zone_dist, 1, 2),
+         zone_change = case_when(
+           diff>0 ~ "Downzone",
+           diff<0 ~ "Upzone",
+           TRUE   ~ "No Change"
+         ))
+
+tbl <- 
+d3 %>%
+  filter(str_detect(zone, "^R")) %>% 
+  group_by(zone, zone_change) %>% 
+  summarise(count   = n()) %>% 
+  mutate(zone_count = sum(count),
+         prop       = count/sum(count))
+
+piv <-  
+tbl %>% 
+  filter(zone_change %in% c("Upzone", "Downzone")) %>% 
+  group_by(zone_change) %>% 
+  arrange(zone_change, prop) %>% 
+  mutate(order = row_number()) %>% 
+  slice_max(order_by = prop, n = 5) %>% 
+  group_by(zone_change) %>% 
+  mutate(zone = fct_reorder(zone, prop)) %>% 
+  ungroup()
+```
+
+
+```{r upzone_downzone, eval = F}
+theme_set(
+  theme_minimal()+
+  theme(
+    strip.text       = element_blank(),
+    strip.background = element_blank(),
+    axis.ticks.y     = element_blank(),
+    legend.position     = "none")
+)
+
+up <- 
+piv %>% 
+  filter(zone_change == "Upzone") %>% 
+  mutate(zone = fct_reorder(zone, prop)) %>% 
+  ggplot(aes (x = zone, y = prop, width = zone_count))+
+  geom_bar(stat = "identity", color = "#d95f02", fill = after_scale(alpha("#d95f02", .7)))+
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0,.01))+
+  labs(title = "Upzone",
+       x     = "",
+       y     = "")+
+  facet_grid(~zone, scales = "free_x", space = "free_x")
+
+down <- 
+  piv %>% 
+  filter(zone_change == "Downzone") %>% 
+  ggplot(aes (x = zone, y = prop, width = zone_count, order = order))+
+  geom_bar(stat = "identity", color = "#1b9e77", fill = after_scale(alpha("#1b9e77", .7)))+
+  labs(title = "Downzone",
+       x = "",
+       y = "",
+       caption = "*widths are proportions of district")+
+  scale_y_continuous(labels = scales::percent_format())+
+  facet_grid(~zone, scales = "free_x", space = "free_x")
+
+
+up/down
+```
+
+

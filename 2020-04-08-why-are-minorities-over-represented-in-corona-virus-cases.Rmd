@@ -1,0 +1,291 @@
+---
+title: covid-19, population density and bad-data
+author: ''
+date: '2020-04-08'
+slug: why-are-minorities-over-represented-in-corona-virus-cases
+categories: []
+tags: []
+---
+
+
+
+```{r setup, echo=F}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+```
+
+```{r}
+if(!require(pacman)) install.packages("pacman")
+
+pacman::p_load(faRley,
+               tidyverse,
+               DBI,
+               ggplot2,
+               tidycensus,
+               janitor,
+               here,
+               ggrepel,
+               gridExtra,
+               pander,
+               gt)
+
+```
+
+```{r}
+
+# gets pop_density, remove borough
+est <- 
+  get_estimates("county", "population", year = 2018, key = Sys.getenv("CENSUS_API_KEY")) %>% 
+  clean_names()%>% 
+  filter(!(geoid %in% c('36085', '36047', '36081', '36061', '36005')))
+
+# read nytimes covid data
+covid <- read_csv("us-counties.csv")
+```
+
+# Intro
+
+What is the relationship between covid-19 infection and population density? It seems very obvious, the closer people are together, the easier it is for a virus to jump from host to host. However the relationship is involves a lot of noise and there are strong counter-examples: there are rural communities that have gotten hit very hard by the coronavirus and some urban centers that have, for one reason or the other, not experienced such an onslaught. The New York Times [releases](https://github.com/nytimes/covid-19-data) a daily case and death counts for all US counties, I combine this data with population density estimates from the American Community Survey. 
+
+### some reasons we might not have all of the answers
+
+Pandemic-data brings several unique challenges, ill outline a few that I can think of:
+
+1. Global pandemics don't happen every year. Since these events are so rare, there's not a lot of data tot test your models and when you can't test your models, you have to rely on theory a lot. 
+
+2. It's a novel virus, so the parameters for the virus itself aren't known at the beginning.   
+
+3. The rate at which the virus replicates is very sensitive to it's environment. This leads to unexpected outcomes and adds noise to the data. For example an asymptomatic man in Albany, Ga attended a funeral and infected several other people at this funeral. The disease spread rapidly in the area despite not being obviously at risk for a pandemic. 
+
+4. It's difficult (albeit extremely important) data to collect. Production hundreds of thousands of tests for a novel disease is very difficult. States differ a lot in how much access they have to testing. States that have less access to tests may systematically differ from those that have more. 
+
+### Should I be doing data analysis on this data right now?
+
+Yes and no. The issue with cross-sectional analysis right now is that the situation is still evolving. And that means any relationship presented here is constantly changing. For instance, what if rural counties experienced infection relatively late (probably true),? If this were the case, then analyzing cross-sectional data would overstate the importance of density on pandemic risk. 
+
+At this point, cross-sectional analysis is maybe best for showing us which counties don't have reported cases (or have very few).   
+
+```{r}
+# creates nyc fips
+covid <- 
+  covid %>%
+  mutate(fips = if_else(county == "New York City", '36999', fips))
+
+covid2 <- 
+  # just most recent
+covid %>% 
+  filter(date == max(date)) %>% 
+  rename(geoid = fips) %>% 
+  select(geoid, cases, deaths)
+
+
+# pivots variable
+est2 <-
+est %>% 
+  select(-name) %>% 
+  pivot_wider(names_from = variable, values_from = value) %>% 
+  clean_names()
+
+# manually adds nyc
+est2 <- 
+  est2 %>% 
+  filter(!is.na(density)) %>% 
+                    add_row(geoid = '36999', pop = 8400000, density = 67000)
+
+
+# join covid with population
+est3 <-
+est2 %>% 
+  left_join(covid2, by = "geoid") %>% 
+  arrange(cases) %>% 
+  mutate(cases = replace_na(cases,0),
+         deaths = replace_na(deaths,0))
+
+
+# split counties by high density, low density
+est4 <-
+  est3 %>% 
+    mutate(cases_100k = cases/pop*100000,
+           density_decile = ntile(density, 10),
+           density_percentile = ntile(density, 100),
+           no_cases = cases_100k ==0,
+           density_100 = density>100)
+
+# scatter cases/100k on density
+scatter1 <- 
+ggplot(est4)+
+  geom_jitter(aes(x = density, y = cases_100k+1, color = no_cases), 
+              height = .25, alpha = .25)+
+  scale_color_brewer(type = "qual", labels = c("One or More", "No Cases"), palette = "Dark2")+
+  # geom_smooth(aes(x = density, y = cases_100k+1), method = "lm", se = F, color = "grey60")+
+  labs(title = "County-level confirmed coronavirus cases",
+       subtitle = "as of April 09, 2020",
+       y = "Confirmed cases/100,000 residents (log scale)",
+       x = "Population density (log scale)")+
+  scale_x_log10()+
+  scale_y_log10(breaks = c(1,10,100,1000),labels = c(0, 10, 100, 1000))+
+  guides(colour = guide_legend(override.aes = list(alpha = 1)))+
+  theme_minimal()+
+  theme(legend.position = "top", legend.title = element_blank())
+
+
+scatter1
+```
+
+
+There is a very strong association between a county's population density and whether or not they have any reported cases.
+
+I can think of two reasons why this might be:
+
+1. Low-density counties have a lower flow rate than dense counties. If there is less exchange within a community, there is a smaller chance that the virus will be introduced.  
+
+2. Low-density counties are less likely to test for covid-19
+
+I would be really surprised if both of these aren't at least a little bit true, and they are certainly not independent. Local government's that beleive their state or county is less likely to be exposed are going to  invest less in testing and general detection. If it is true that low-density counties invest less in detection/capita then we can expect that the relationship between density and case-detection is over-stated. 
+
+Regardless of the cause of the cause for the differences, I beleive the best way to show this difference is in a truth table like the one shown below. Most strikingly, counties with less than 100 people per square mile have a 27.5% chance of having no reported cases compared to less than 1% for counties that have greater than 100 people per square mile.
+
+
+```{r}
+
+# table of aggregates
+tab1 <- 
+est4 %>% 
+  group_by(density_100, no_cases) %>% 
+  summarise(prop = n()) %>% 
+  mutate(prop = prop/sum(prop))
+
+# pivot table wide, name rows
+tab2 <- 
+  tab1 %>% 
+  pivot_wider(names_from = no_cases, values_from = prop) %>% 
+  ungroup %>% 
+  mutate(nm = c("<100", ">100")) %>% 
+  rename(`HAS reported cases` = `FALSE`, `NO reported cases` = `TRUE`) %>% 
+  select(-density_100) 
+
+# use gt package for table aesthetics
+tab2 %>%  
+    gt(rowname_col = "nm" ) %>% 
+  fmt_percent(columns = everything()) %>% 
+  tab_stubhead(label = "POPULATION density") %>% 
+  tab_header(title = "population density and coronavirus cases",
+             subtitle = "split at  100 people/mi") %>% 
+  tab_source_note("Data: NYTimes Database and ACS") %>% 
+  
+  tab_options(table.width = pct(45))
+
+
+
+```
+
+### binning the data
+
+Binning the data can be a helpful way to reduce noise. In the chart below i have ranked counties by density and grouped them together in 100 bins, each bin consists of `r round(n_distinct(est$geoid)/100, digits = 0)` counties. Each bin takes on the value of the weighted mean of the 32 counties within that group. The trade-off here is that you may lose some important information by averaging counties together. Ultimately this plot shows a strong relationship between density and reported cases and doesn't miss all of the anomalies. Two things stand out to me here:
+
+1. Two of the the most anomalous counties have have world-famous ski resorts. Ski-resorts and their surrounding area's have very high 'peaks of human exchange' for their resident population. 
+
+```{r}
+
+# aggregate data by density percentile
+est5 <- 
+est4 %>% 
+  group_by(density_percentile) %>% 
+  summarise(pop = sum(pop),
+            cases = sum(cases),
+            cases_100k = (cases/pop)*100000,
+            dens = median(density))
+lb <- 
+est5 %>% 
+  filter(density_percentile %in% c(17, 42))
+
+
+
+bar1 <- 
+est5 %>% 
+  ggplot(aes(x = factor(density_percentile), y = cases_100k))+
+  geom_col(color = "grey40", fill = "grey70")+
+  scale_x_discrete(breaks = seq(10,100,10))+
+  geom_text_repel(data = lb, 
+                  segment.size = .4, nudge_x = 15, 
+                  point.padding = 1, arrow = arrow(length = unit(.01, "npc")),
+                  aes(x = density_percentile, y = cases_100k), 
+                  label = c("Sun Valley, ID", "Vail, Co"))+
+  labs(title = "county-level reported covid-19 cases by density percentile",
+       subtitle = "as of April 10, 2020",
+       x = "density percentile",
+       y = "reported cases/100,000 people",
+       caption = "Data: NY Times Covid-19 database and ACS")+
+  theme_minimal()+
+  theme(panel.grid.minor = element_blank())
+bar1
+
+```
+
+
+
+```{r}
+
+# gets cumulative distribution of cases, population by county density
+pareto <-
+est4 %>% 
+  select(density, cases) %>% 
+  arrange(desc(density)) %>% 
+  mutate(cum_cases = (cumsum(cases)/sum(cases)),
+         density_rank = ((row_number())/n())) %>% 
+  select(cum_cases, density_rank) %>% 
+  add_row(cum_cases = 0, density_rank = 0) %>%
+  arrange(desc(density_rank)) %>% 
+  mutate(nyc = T)
+
+# same thing as above, excludes nyc
+pareto2 <- 
+  est4 %>% 
+ filter(geoid != "36999") %>% 
+  select(density, cases) %>% 
+  arrange(desc(density)) %>% 
+  mutate(cum_cases = (cumsum(cases)/sum(cases)),
+         density_rank = ((row_number())/n())) %>% 
+  select(cum_cases, density_rank) %>% 
+  add_row(cum_cases = 0, density_rank = 0) %>%
+  arrange(desc(density_rank)) %>% 
+  mutate(nyc = F)
+
+pareto3 <- bind_rows(pareto, pareto2)
+
+# plots pareto 
+ggplot()+
+  geom_line(data = pareto3, aes(x = density_rank, y =  cum_cases, color = nyc), lwd = 1)+
+  scale_color_brewer(palette = "Dark2", labels = c("Without NYC", "With NYC"))+
+  scale_y_continuous(breaks = seq(0,1,.2), labels = scales::percent)+
+  scale_x_continuous(breaks = seq(0,1,.2), labels = scales::percent)+
+  labs(title = "a small percentage of dense counties have most of the reported cases",
+       subtitle = "even when you remove NYC",
+       y = "cumulative cases",
+       caption = "NYTimes Covid-19 database")+
+  xlab('higher density counties <--------------> lower density counties')+
+  theme_minimal()+
+  theme(legend.position = "top",
+        legend.title = element_blank())
+
+```
+
+
+## To wrap up:
+</br>
+1. although the relationship between pandemic-risk and density is actually kinda hard to see, its very important
+
+2. its easy to discount the amount of people in the-middle-of-nowhere who have don't have coronavirus, dont know anyone who have coronavirus, and dont know anyone who knows anyone who has coronavirus
+
+3. being in a really dense place seems to matter a lot for this virus, being in a sort-of dense place doesn't really seem to matter
+
+
+
+
+
+
+
+
+
+
+
+
