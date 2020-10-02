@@ -29,8 +29,8 @@ pacman::p_load(
 con <- 
   DBI::dbConnect(RPostgreSQL::PostgreSQL(),
                  host = "localhost",
-                 dbname = "swamp",
-                 user = "tfarley",
+                 dbname = Sys.getenv('LOCAL_DB'),
+                 user = Sys.getenv('LOCAL_UNAME'),
                  port = 5432)
 
 d <-
@@ -160,13 +160,6 @@ I think the tendency to compartmentalize land-uses makes a lot of sense. As I sh
 
 
 ```{r  density_plot, fig.height=3, cache = T}
-
-con <- 
-  DBI::dbConnect(RPostgreSQL::PostgreSQL(),
-                 host = "localhost",
-                 dbname = "swamp",
-                 user = "tfarley",
-                 port = 5432)
 foo <- con %>% 
   tbl("pluto_agg") %>% 
   filter(year == 2020, unitsres>0) %>% 
