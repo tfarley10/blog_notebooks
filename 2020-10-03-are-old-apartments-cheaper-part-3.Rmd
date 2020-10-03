@@ -1,0 +1,489 @@
+---
+title: Are old apartments cheaper?..Building a statistical model!
+author: ''
+date: '2020-10-03'
+slug: are-old-apartments-cheaper-part-3
+categories: []
+tags: []
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, eval = F)
+```
+
+- *last compiled: * `r  as.Date(lubridate::now())`
+
+[/br]
+
+
+
+First: $R_i$, the monthly rental price for unit $i$, is log-normally distributed conditional on $\mu_i$, the mean for unit $i$ and the variance $\sigma$.
+
+\begin{align*}
+R_i   \sim & LogNormal(\mu_i, \sigma) \\
+\mu_i    = & \alpha_{BID[i]} + \sum^{J}_{j=1}w_jF_{j,BID[i]} + \beta_{size}Size_i + \beta_{bedrooms}Bedrooms_i
+\end{align*}
+
+
+$\alpha_{BID[i]}$ is the intercept for unit $i$. The BID stands for bucket ID and indexes if the unit is in a small, medium or high income bucket neighborhood. 
+
+$\sum^{J}_{j=1}w_jF_{j,BID[i]}$ represents the entirety of the factor-smooths term. Here, $w_j$ is the weight given for the $j^{th}$ basis function and the $i^{th}$ unit, again, indexed with $BID$ to identify the income bucket.[^mgcv]
+
+\begin{align*}
+w_j   \sim & StudentT(3,0,10) \\
+\beta_{size}, \beta_{bedrooms}  \sim & Normal(0,1) \\
+\sigma  \sim & Exponential(1)
+\end{align*}
+
+$\beta_{size}$ and $\beta_{bedrooms}$ are the parameters for the slope coefficients. 
+
+
+finally, I use an exponential distribution for the variance parameter $\sigma$. 
+
+
+
+
+
+```{r package_check, eval = T, echo = F}
+nec_packages <- 
+  c(
+    "tidyverse", # wrangling, graphics        
+    "gt",        # html tables 
+    "here",      # environment   
+    "brms",      # STAN wrapper   
+    "tidybayes", # extracting draws
+    "patchwork", # combine seperate plots,
+    "ggridges"   # ridgeline plots
+    )
+
+# https://stackoverflow.com/questions/4090169/elegant-way-to-check-for-missing-packages-and-install-them
+new_packages <- nec_packages[!(nec_packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new.packages)
+```
+
+
+```{r libs, eval = T, echo = T}
+library(tidyverse) 
+library(gt)        
+library(here)      
+library(brms)      
+library(tidybayes) 
+library(patchwork)
+library(ggridges)
+
+```
+
+
+
+
+```{r pre_process, echo=T, eval = T}
+
+url <- "https://raw.githubusercontent.com/Codecademy/datasets/master/streeteasy/streeteasy.csv"
+raw_data <- read_csv(url)
+
+# found a mistake
+ste <- mutate(raw_data, borough = if_else(neighborhood == "Long Island City", "Queens", borough))
+
+# too much typing
+ste <- rename(raw_data, age = building_age_yrs)
+
+# sparse after 150, makes the fits cleaner
+ste <- filter(ste, age < 151)
+
+# rent is appr lognormal
+ste$rent_log <- log(ste$rent)
+
+# for scaling
+mean_rent_log <- mean(ste$rent_log)
+sd_rent_log  <- sd(ste$rent_log)
+
+# size is appr lognormal
+ste$size_log <- log(ste$size_sqft)
+
+# for scaling
+mean_size_log  <- mean(ste$size_log)
+sd_size_log   <- sd(ste$size_log)
+
+
+# df to be passed into brms::brm()
+ste <- 
+ste %>% 
+  mutate(rent_lc = (rent_log-mean_rent_log)/sd_rent_log,
+         size_lc = (size_log-mean_size_log)/sd_size_log)
+
+# loads the crosswalk for income buckets defined in part 1
+load(file = here("crosswalk.rdata"))
+ste <- inner_join(ste, select(crosswalk, c(neighborhood, income_bucket)))
+```
+
+
+```{r drop_cols, echo=F}
+
+# choosing most relevant features
+keep_cols <- 
+  
+   c( "rent",
+     "bedrooms",
+     "bathrooms",
+     "size_sqft",
+     "neighborhood",
+     "age",
+     "borough",
+     "submarket")
+
+# streeteasy data
+ste <- ste %>% select(one_of(keep_cols))
+
+
+```
+
+
+## define model
+```{r smooth_specs, echo=TRUE, eval=T}
+
+# load(file = here::here("clean_data", "final_model_data.rdata"))
+
+set.seed(1020)
+
+# create brms formula
+smooth_form <- 
+  brms::bf( rent_lc ~ 0+  
+        s(age, 
+          by = income_bucket, 
+          # `fs` specifies factor-smooth basis functions
+          bs = "fs") +
+      bedrooms + size_lc +(1|income_bucket))
+
+
+# priors for smooth model
+priors_smooth <- c(  # ß_bedroom, ß_size
+                     prior(normal(0, 1.5), class = b),
+                     # wiggliness of the smooths, taking a liberty here
+                     prior(student_t(3, 0, 2.5), class = sds),
+                     # population variance
+                     prior(exponential(1), class  = sigma),
+                     # fixed effects variance
+                     prior(exponential(1), class = sd))
+
+# fit the smooth model
+smooth_mod <- 
+  brms::brm(
+             formula = smooth_form,
+             data    = ste,
+             warmup  = 1000,
+             iter    = 3000,
+             prior   = priors_smooth,
+             # this saves .rds object
+             file    = here("models", "smooth_model"),
+             chains  = 4,
+             cores   = 4,
+             # NUTS specific parameter for avoiding divergent transitions
+             control = list(adapt_delta = 0.90)
+  )
+
+```
+
+
+```{r linear_specs}
+
+linear_form <-
+  bf( rent_lc ~ income_bucket + size_lc + age + income_bucket + bedrooms )
+
+priors_linear <- c(  prior(normal(0, 10),  class = Intercept),
+                     prior(exponential(1), class = sigma),
+                     prior(normal(0, 10),  class = b) )
+
+linear_mod <- 
+  brm(
+    formula = linear_form,
+    data    = d,
+    warmup  = 1000,
+    iter    = 3000,
+    prior   = priors_linear,
+    file    = here("models", "mod_linear"),
+    chains  = 4,
+    cores   = 4
+  )
+
+```
+
+
+
+
+## fit models
+
+```{r fitted_draws, cache=T}
+len <- 50
+n_draws <- 3000
+lv <- c("low-income", "middle-income", "high-income")
+
+mean_rent <- mean(d$rent_log)
+sd_rent <- sd(d$rent_log)
+
+# create new data to sample from the posterior
+new_data <-
+smooth_mod$data %>% 
+  modelr::data_grid(
+    bedrooms      = rep(2, len*3),
+    size_lc       = rep(0.59, len*3), # median size of 2 br apt, 1050 sqft
+    age           = modelr::seq_range(age, len*3),
+    income_bucket = rep(factor(1:3, labels = lv), len)
+  )
+
+
+# sample from the posterior 
+smooth_fits <- tidybayes::add_fitted_draws(new_data, smooth_mod, n = n_draws)
+linear_fits <- tidybayes::add_fitted_draws(new_data, linear_mod, n = n_draws)
+
+
+
+# convert from centered scale
+smooth_fits <- mutate(smooth_fits, rent = exp( (.value*sd_rent)+mean_rent ),
+                      model = "smooth")
+linear_fits <- mutate(linear_fits, rent = exp( (.value*sd_rent)+mean_rent ),
+                      model = "linear")
+
+
+
+fits <- bind_rows(smooth_fits, linear_fits)
+fits <- fits %>% mutate(grp = str_c(.draw, model))
+
+```
+
+
+
+
+## visualize two models
+
+```{r plot_draws, fig.align="center", fig.width=10, cache=T}
+
+
+
+theme_set(theme_minimal()+
+            theme(plot.subtitle = element_text(size = 8),
+                  panel.grid.minor = element_blank()))
+
+
+# smooth model
+title <- expr("Comparing Posterior Fits"-"Smooth vs. Linear")
+subtitle <- expr('E[Rent|'*list(Age['Neighborhood Income[i]'], 'Unit size=1,050'*ft^2, 'Bedrooms=2]'))
+
+
+
+fits_plt <-
+fits %>% 
+  ggplot(aes(group = grp))+
+  geom_line(aes(age, rent,  color = model), lwd = .1, alpha = .08)+
+  facet_grid(~income_bucket)+
+  scale_y_log10(breaks = c( 3000, 4000, 5000, 6000, 7000), limits = c(2500, 7500))+
+  scale_x_continuous(breaks = c(0,25, 50, 75, 100, 125), limits  = c(0, 150))+
+  dutchmasters::scale_colour_dutchmasters("milkmaid")+
+  labs(title = title,
+       subtitle = subtitle)+
+  guides(colour = guide_legend(override.aes = list(alpha = 1, lwd = 1)))
+
+fits_plt
+
+
+
+```
+
+
+
+
+## visual model comparison
+
+```{r pp_check, fig.align="center", fig.width=8, fig.height=2, cache=T}
+
+
+
+n <- 100
+
+bayesplot::color_scheme_set("red")
+pp_smooth <- bayesplot::pp_check(smooth_mod, nsamples = n)
+pp_linear <- bayesplot::pp_check(linear_mod, nsamples = n)
+
+pp_smooths_plt <- 
+pp_smooth+
+  labs(title = "Smooths model")+
+  scale_x_continuous(limits = c(-4, 4))+
+  theme(legend.position = "none")
+
+pp_linear_plt <- 
+  pp_linear+
+  labs(title = "Linear model")+
+  scale_x_continuous(limits = c(-4, 4))
+
+
+title <-  "Posterior Predictive checks"
+
+pp_smooths_plt+pp_linear_plt+plot_annotation(title = title)
+```
+
+
+## which model predicts out of sample 
+
+```{r loo_table, cache = T}
+
+
+smooth_mod <- brms::add_criterion(smooth_mod, "loo")
+linear_mod <- brms::add_criterion(linear_mod, "loo")
+
+models <- c("Smooth model", "Linear model")
+title <- "loo comparison of models"
+
+elpd <- "Differences in estimated log predictive density"
+
+
+loo_table <- 
+brms::loo_compare(linear_mod, smooth_mod) %>% 
+  as_tibble() %>% 
+  select(1:2) %>% 
+  mutate(models = models,
+         across(1:2, as.numeric)) %>% 
+  select(models, everything())
+
+se_difference <- round(abs(loo_table$elpd_diff[2]/loo_table$se_diff[2]), 2)
+difference_label <- glue::glue("{se_difference} times greater\nthan the standard error of the differences")
+
+
+loo_table %>% 
+  gt(rowname_col = "models") %>% 
+  fmt_number(columns = vars(elpd_diff, se_diff), decimals = 1) %>% 
+  tab_header(title = title) %>% 
+  tab_footnote(
+    footnote = difference_label,
+    locations = cells_body(
+      columns = vars(elpd_diff),
+      rows = 2)
+    )
+  
+  
+
+```
+
+</br>
+
+## How do we expect apartment price to change when age goes from 0 to 35?  
+</br>
+
+```{r predict_35, cache = T}
+years <- c(0, 50)
+
+new_data <- 
+  smooth_mod$data %>% 
+  modelr::data_grid(
+    bedrooms         = rep(2, len*3), # 2br apartment
+    size_lc          = rep(0.59, len*3), # median size 2br
+    age              = rep(years, (len*3)/length(years)), # repeat 0, 35
+    income_bucket    = rep(factor(1:3, labels = lv), len) # for every income level
+  )
+
+
+predictions_35 <- 
+  tidybayes::add_predicted_draws(newdata = new_data, 
+                      model   = smooth_mod, 
+                      n       = 2e3) %>% 
+  mutate(rent = exp((.prediction*sd_rent)+mean_rent))
+
+
+predict_difference <- 
+  predictions_35 %>% 
+  arrange(desc(income_bucket, age)) %>% 
+  # make comparisons with draw from posterior
+  group_by(.draw, income_bucket) %>% 
+  # difference in predicted price after 35 years
+  mutate(rent_diff = rent-lag(rent)) %>% 
+  
+  filter(!is.na(rent_diff)) %>%
+  mutate(total_diff = cumsum(rent_diff))
+```
+
+
+```{r plot_35, fig.align="center", fig.height=5, fig.width=7, cache=T}
+
+
+theme_set(
+  theme_minimal()+
+  theme(panel.grid.minor = element_blank(),
+        legend.position  = "top",
+        axis.text.y      = element_blank(),
+        legend.title     = element_blank())
+)
+
+title <- "How do we expect apartment price to change when age goes from 0 to 35?"
+subtitle <- expr(list("2 bedroom unit", "size=1,050 ft"^2))
+x_lab <- "\nE[rent | age = 35), ...] - E[rent | age = 0), ...]"
+x_breaks <- seq(-7000, 7000, 1000)
+x_limits <- c(-7000, 7000)
+plt_arrow <- arrow(length = unit(2, "mm"), ends = "first")
+
+pal <- viridis::viridis_pal(option = "magma")(16)[c(13, 9, 5)] 
+
+scale_colour_discrete <- function(...){
+  scale_colour_manual(..., values =pal)
+}
+
+scale_fill_discrete <- function(...){
+  scale_fill_manual(..., values =pal)
+}
+
+library(ggridges)
+m <- 
+  predict_difference %>% 
+  group_by(income_bucket) %>% 
+  summarise(med = median(total_diff))
+
+ggplot(predict_difference, aes(x = total_diff, y = income_bucket, color = income_bucket) ) + 
+  geom_density_ridges(scale =2, size = 1.5, alpha = 0.3, rel_min_height = .0005, quantile_lines = T, quantiles = 2)+
+  scale_x_continuous(limits = x_limits, breaks = c(-4000, -2000, 0, 2000, 4000))+
+  scale_y_discrete(expand = expand_scale(add = c(0.2, 1.5)))
+
+
+  
+# predict_difference %>% 
+#   
+#  ggplot(aes(x     = total_diff, 
+#             color = income_bucket))+
+#    
+#    geom_density(lwd = 1)+
+#    
+#    geom_vline(xintercept = 0, linetype = "dotdash", size = 1, alpha = .6)+
+#    
+#    annotate(geom      = "curve", 
+#             x         = 10, 
+#             y         = 3e-4, 
+#             xend      = 2000, 
+#             yend      = 2.5e-4, 
+#             curvature = -.3, 
+#             size = 1,
+#             alpha = .7,
+#             arrow     = plt_arrow)+
+#    
+#    annotate(geom      = "text", 
+#             x         = 2100, 
+#             y         = 2.5e-4, 
+#             label     = "No\nchange", 
+#             hjust     = "left")+
+#    
+#    scale_x_continuous(name   = x_lab,
+#                       breaks = x_breaks, 
+#                       limits = x_limits )+
+#    labs(title    = title,
+#         subtitle = subtitle)
+  
+```
+
+
+
+
+## Technical Summary
+
+### Packages Used
+
+- {brms}
+
+
+[^mgcv]: Wood SN (2011). “Fast stable restricted maximum likelihood and marginal likelihood estimation of semiparametric generalized linear models.” Journal of the Royal Statistical Society (B), 73(1), 3-36.
