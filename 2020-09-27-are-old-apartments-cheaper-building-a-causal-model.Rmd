@@ -87,6 +87,7 @@ I have introduced several potential biases in identifying filtering effects, pre
 
 Importantly, using DAGs for this analysis has shed more light on the limitations in the dataset as I've identified two biaes that I can't find a back-door path to solve: the cohort effects, and selection effects. With these issues unresolved, I'll continue with the analysis keeping in mind that statisticasl inference needs to be taken with a grain-of-salt. In my next post, i'll use information from my causal models to justify and build a statistical model of filtering.
 
+[Next Post: Building a Statistical Model](https://tfarley10.github.io/2020/10/03/are-old-apartments-cheaper-part-3/)
 
 
 

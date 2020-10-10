@@ -1,5 +1,5 @@
 ---
-title: Are old apartments cheaper? Part 1
+title: Are old apartments cheaper?...Exploring Streeteasy Data
 author: ''
 date: '2020-09-26'
 slug: are-old-apartments-cheaper-part-1
@@ -51,26 +51,52 @@ df <- mutate(df, borough = if_else(neighborhood == "Long Island City", "Queens",
 
 # Introduction
 
-There are a lot of constraints to the housing supply in New york. Housing affordability is a major concern and national issue. A major theme in the discussion of how we can provide more affordable housing is that, contrary to Econ 101 logic, increases in the housing supply increase the median housing price/rent. one thing that probably isn't mentioned enough is that housing tends to get cheaper. in the economics literature this effect is called filtering effects-- as high-end apartments and new homes age, they tend to become more affordable.  in this post i will:
+  The cost of housing in New York City has grown at an unprecedented rate over the past several decades. There are probably both supply-side and demand-side causes to these price increases. On the demand side, some have speculated that there is a superstar-city effect: since the information revolution, the demand for high skilled workers has increased, which has increased the demand for real-estate in dense cities where there are tech companies located. On the supply side, there has been a lot of reluctance both at the neighborhood level and among city officials to promote expansionist housing policies. The result has been prohibitively expensive rent prices and lower labor mobility nationwide. 
 
-- introduce a dataset of 5000 NYC apartments for rent from the Real Estate platfor Streeteasy
+  This begs the question: how can we make urban housing more affordable? Solutions usually come in two forms, a market-based approach and an interventionist approach. The market-based approach is usually some variant of easing restrictions and granting tax incentives, an interventionist approach typically involves rent controls and various types of subsidies. An important critique of the market-based approach is that new housing tends to be expensive. While a valid concern, this argument doesn’t consider how long, new market-rate housing stays expensive. I’ll try to answer this question using data from the US Census and the NYC-based real estate platform [Streeteasy](https://streeteasy.com/rentals). 
 
-- enhance this dataset with census data in order to make comparisons across neighborhood income levels
+### My posts will have roughly the following structure:
 
-- discuss how this data will be used to identify filtering effects in the NYC rental market
+- Review the literature and assemble a dataset
+
+  - What do economists already know about *filtering* effects in the housing market?
+  - Join Streeteasy and Census datasets
+  - Explore the newly assembled dataset
+  
+- Causal Modelling
+
+  - Use Directed Acyclic Graphs (DAGs) to explicitly state assumptions
+  - Show the shortcomings of my model and which confounders aren't being accounted for
+  
+- Build a statistical model
+
+  - Formally specify a statistical model
+    - discuss using *Generalized Additive Models* and why this is a good application for splines
+  - Specify my (weakly informative) prior information
+  - Fit and interpret the model using samples from the posterior distribution
+  
+- Model assessment
+  
+  - Assess in-sample predicive performance using posterior predicitve checks
+  - Compare the out-of-sample predicive performance of the Splines model and a linear model using leave one out cross validation
+  - Conclude the analysis and discuss next steps
+
+
 
 ## Filtering in the housing market
 
-Filtering is an important idea in housing policy, expecially when it comes to maintaining a healthy supply of affordable housing. Filtering effects are very intuitive: as the housing stock becomes older, it depreciates, deteriorates and falls out of fashion. The idea that new, more expensive housing will *filter* down to become more affordable housing. If there are strong filtering effects in a housing market then, if a policy goal is to provide more affordable housing, increasing the current supply of higher end housing will probably increase the supply of affordable housing years in the future. 
+Filtering is an important idea in housing policy, especially when it comes to maintaining a healthy supply of affordable housing. Filtering effects are very intuitive: as the housing stock becomes older, it depreciates, deteriorates, and falls out of fashion. The idea is that new, more expensive housing will *filter* down to become more affordable housing. If there are strong filtering effects in a housing market then, increasing the current supply of higher end housing will probably increase the supply of affordable housing years in the future. 
 
-A housing supply and affordability has become an important topic in the past decades, many efforts have gone to identifying these effects. (Coulson and Bond, 1990) take a hedonic-regression approach with a linear model and dont find strong evidence of filtering at all[^3]. In a future post ill explore the limitations of using linear methods for this problem. Economist Eric Rosenthal constructs an impressive panel dataset and finds evidence for both non-linear and heterogeneous filtering effects.[^4]
+A breif scan of the economics literature on *filtering effects* surprisingly shows some debate over whether these effects are real.  Coulson and Bond (1990) take a hedonic-regression approach with a linear model and dont find strong evidence of filtering at all[^3]. Rosenthal (2014) constructs and summarizes an impressive panel dataset and finds suggestive graphical evidence that filtering effects are probably non-linear and heterogenous between the rental market and the owner-occupied markets.[^4]  
 
 
 
 
 ### The Streeteasy dataset
 
-The real estate platform [Streeteasy](https://streeteasy.com/) released a dataset of 5,000 apartments for rent on their website. This dataset is accessible on [github](https://raw.githubusercontent.com/Codecademy/datasets/master/streeteasy/streeteasy.csv) and [Code Academy](https://www.codecademy.com/articles/streeteasy-dataset) does a good job of describing it. The most importants features for the sake of this project are:
+The real estate platform [Streeteasy](https://streeteasy.com/) released a dataset of 5,000 rental apartments from 2014 on their website which can be accessed on [github](https://raw.githubusercontent.com/Codecademy/datasets/master/streeteasy/streeteasy.csv). The data was published for a [Code Academy](https://www.codecademy.com/articles/streeteasy-dataset) course on multivariate regression techniques, so, a more in-depth description of all of the available features in the dataset is available there.
+
+For this project, the most important variables are:
 
 `rent - price of rent ($)`</br>
 `bedrooms - number of bedrooms`</br>
@@ -178,7 +204,7 @@ So, $e^\sigma=1.67$ which means a standard deviation increase in rent is a 67% i
 
 
 
-```{r panel1, fig.align = "center", fig.height=3, fig.width=4}
+```{r panel1, fig.align = "center", fig.height=3, fig.width=4, cache =T}
 
 
 age_dens <-
@@ -288,7 +314,7 @@ bucket_labs <- df %>%
 
 As mentioned earlier, this dataset creates a unique opportunity in that is has highly granular neighborhood information. A-priori, neighborhood-level information is clearly relevant to the price of a given rental unit. I mapped *93* Streeteasy Neighborhoods into *39* U.S. Census[^7] *Public Use Microdata Areas*  (PUMA) and then bucketed units into **`r bucket_labs$lb[1]`**, **`r bucket_labs$lb[2]`** and **`r bucket_labs$lb[3]`** `income_buckets`. My approach was to 'eyeball' the distribution of Units by PUMA income and split them as evenly as I could. The key idea here is that the income level of a given neighborhood is correlated with all sorts of variables that cause differences in the price of a rental unit. For instance, low income neighborhoods often have higher crime rates, and, all else equal most people will be willing to pay less money for an apartment in a high-crime neighborhood than for one in a safer neighborhood. 
 
-```{r fig.align="center", out.width="80%", out.height="35%"}
+```{r fig.align="center", out.width="80%", out.height="35%", cache = T}
 library(patchwork)
 library(tidyverse)
 library(viridis)
@@ -353,7 +379,7 @@ bucket_distribution_plot+income_chlor+plot_layout(design = d)
 
 To further explore the data, I use the geom_smooth[^8] function from the ggplot2 package in R to make conditional-means plots for both unit size and building age on monthly rent. With this approach I basically build 3 models in order to explore the data. Moving from left to right I plot the conditional means of *the linear model*, *Generalized Additive Model* (GAM)[^9] and a *GAM with an Interaction term*. I'll introduce the GAM's further in a later post, but essentially they are regression methods that allow for more flexibility in modelling linear relationships. I think what laregly stands out here is the inadequacy of the linear model. 
 
-```{r out.width="190%", fig.height = 3.5, fig.align="center"}
+```{r out.width="190%", fig.height = 3.5, fig.align="center", cache = T}
 
 
 linear_plot <- 
@@ -408,12 +434,18 @@ linear_plot+smooth_plot+age_rent_plt
 
 I have explored the economics literature on *filtering effect* in the housing market, gathered some data, enhanced this data with U.S. Census Data, and explored the data with by contrasting a *linear approach*, *a non-linear approach* and a *non-linear approach with mediation*. My ultimate goal is to use this data to make causal inferences about the effects of building-age on the price of rent. Therefore, before I build any statistical model's I'll use Directed Acyclic Graphs (DAGs) to explicitly build causal models of this relationship.  
 
+</br>
+
+[Next post: Causal Models](https://tfarley10.github.io/2020/09/27/are-old-apartments-cheaper-building-a-causal-model/)
+
+Heres the [notebook for this post](https://github.com/tfarley10/blog_notebooks/blob/master/2020-09-26-are-old-apartments-cheaper-part-1.Rmd)
 
 
 
 
 
-```{r fig.align="center", fig.height=4, include = F}
+
+```{r fig.align="center", fig.height=4, include = F, eval = F}
 
 library(ggrepel)
 med_size_tbl <- 
@@ -458,6 +490,10 @@ df %>%
 size_density_plot
 
 ```
+
+
+
+[Notebook for this post](https://github.com/tfarley10/blog_notebooks/blob/master/2020-09-26-are-old-apartments-cheaper-part-1.Rmd)
 
 
 [^1]:McElreath, Richard. Statistical Rethinking a Bayesian Course with Examples in R and Stan. CRC Press, 2020. 
